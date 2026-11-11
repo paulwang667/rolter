@@ -240,6 +240,69 @@ that gains a target keeps its existing models and the new target reads as
 unpredicted until the next process start — the conservative direction, since a
 target with no evidence should not be ranked.
 
+## Cache-aware warm replicas (a negative result)
+
+`cache_aware` pins a prompt to the target whose trie matches it best, and spreads
+the prompt only when that target is overloaded. When several targets have served
+the same prefix, the lowest index wins the tie. Under load that is a stable
+partition of the prefixes across the replicas, which is what keeps a small upstream
+cache working.
+
+The attempt was to pick the least-loaded warm replica instead, so a prefix several
+replicas hold is shared between them. A simulation of the rule (a single FIFO
+server per target, each holding an LRU of two prefixes, six Zipf-distributed
+prefixes, a 20 ms warm and a 40 ms cold service) predicted a p99 reduction of
+14 to 19% at high load. The live run through the gateway, against three fake
+upstreams with the same cache, did not reproduce it:
+
+| cache per upstream | rate (rps) | rule                     | hit rate | p99 (s) |
+| ------------------ | ---------- | ------------------------ | -------- | ------- |
+| 2 prefixes         | 75         | lowest-index warm (base) | 0.64     | 0.355   |
+| 2 prefixes         | 75         | least-loaded warm        | 0.53     | 0.367   |
+| 2 prefixes         | 100        | lowest-index warm (base) | 0.66     | 0.688   |
+| 2 prefixes         | 100        | least-loaded warm        | 0.53     | 4.84    |
+| all 6 prefixes     | 100        | lowest-index warm (base) | 0.997    | 0.251   |
+| all 6 prefixes     | 100        | least-loaded warm        | 0.997    | 0.199   |
+
+With eviction the new rule loses cache hits and the p99 rises sevenfold at 100 rps,
+because the gateway's trie never forgets a prompt. A replica counts as warm after
+its upstream cache has evicted the prefix, so the spread sends each prefix to
+replicas that no longer hold it, and every replica then sees all six prefixes.
+Without eviction the rule is slightly better, because the gain there is only load
+spreading. The simulation assumed a warm target was a cached one, which the trie
+does not guarantee. Each cell is one run, so these are single observations, but the
+hit-rate gap held at both loads.
+
+### Retry: a recency window
+
+The retry defines a replica as warm for a prefix only if it served that prefix among
+its last few distinct prefixes, an LRU of the gateway's own making. Prefixes are
+identified by a hash of their first 256 bytes, and a prompt shorter than that is
+identified whole. The trie still applies the match threshold.
+
+| cache per upstream | rate (rps) | rule                     | hit rate | p99 (s) |
+| ------------------ | ---------- | ------------------------ | -------- | ------- |
+| 2 prefixes         | 75         | lowest-index warm (base) | 0.64     | 0.355   |
+| 2 prefixes         | 75         | recency window of 2      | 0.85     | 0.237   |
+| 2 prefixes         | 100        | lowest-index warm (base) | 0.66     | 0.688   |
+| 2 prefixes         | 100        | recency window of 2      | 0.80     | 0.508   |
+| 2 prefixes         | 100        | recency window of 64     | 0.53     | 4.02    |
+| all 6 prefixes     | 100        | recency window of 2      | 0.997    | 0.195   |
+
+A window that matches the upstream cache removes the regression and improves on the
+baseline by 26 to 33% at p99, with the best hit rate measured. A window of 64 against
+a 2-prefix cache falls back to the failure seen above. So the rule works only when the
+window matches the cache, and the gateway does not know that size.
+
+These are single runs. The eviction model is the fake upstream's LRU, so the window of 2
+matches it by construction. That shows the mechanism, not a production benefit: real
+caches evict blocks, not whole prefixes, and their size is not fixed.
+
+The change was not merged. A warm set that tracks the upstream cache needs that cache's
+size or its evictions, which the gateway does not receive. An upstream's reported
+cached-token count would give that signal from measurements rather than a guess, and it
+is the next thing to test.
+
 ## Choosing a strategy
 
 | Use case                                               | Strategy                 |
