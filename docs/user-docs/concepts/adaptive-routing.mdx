@@ -20,7 +20,7 @@ older than 60 seconds so a stopped node cannot look healthy.
 
 ## The blend
 
-Three signals are scored in `[0, 1]` and combined as a weighted sum:
+Three signals are scored in `[0, 1]` and combined as a weighted sum. Latency and cost are each scored against the best target: the best scores `1`, a target twice as slow or twice as expensive scores `0.5`, and a tenfold gap scores `0.1`. Each gap keeps its size, so a one-millisecond difference does not outweigh a tenfold price. In-flight load scores `1` for the idle target and `0` for the busiest. A target with no latency sample or no price scores a neutral `0.5`, and a route where fewer than two targets have a sample or a price is left unscored.
 
 | Signal           | What it measures                                     |
 | ---------------- | ---------------------------------------------------- |

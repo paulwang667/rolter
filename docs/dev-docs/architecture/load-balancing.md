@@ -131,6 +131,32 @@ The policy is also owned by the control plane: `GET`/`PUT /api/v1/adaptive-routi
 
 Once engaged, an `exploration_ratio` share of picks is made uniformly at random so a target the blend has learned to avoid keeps producing fresh latency samples instead of going dark. Operator input is clamped on the way in: negative weights become zero and exploration never exceeds half the traffic.
 
+### Normalisation of the blend
+
+The latency and cost terms of the blend are scored with `rank_ratio` in
+[`scorer.rs`](../../../crates/rolter-balancer/src/scorer.rs): the best known value
+scores `1.0` and every other value scores `best / value`. An unknown value scores
+`0.5`, and with fewer than two known values every target scores `1.0`. The load
+term is unchanged, `1 - load / max`.
+
+Until this change the blend used the min-max scoring of `fastest` and `cheapest`,
+which scales the best of two targets to `1.0` and the worst to `0.0` whatever the
+gap. A 1 ms difference between 100 ms and 101 ms was then worth as much as a
+tenfold price, and a tenfold price could not be bought with a faster target. The
+probe for that case sent all 500 picks to the expensive target. The regression tests
+are `blend_normalisation_tests` in [`adaptive.rs`](../../../crates/rolter-balancer/src/adaptive.rs).
+
+`fastest` and `cheapest` still use min-max. They are not part of the adaptive blend,
+and changing their scoring changes routing for every route that uses them.
+
+Simulated with the three-target queue used for `fastest_share` (EWMA α = 0.3, ρ = 0.6,
+heterogeneous μ = 1 / 0.8 / 0.5), the ratio scores with the blend's 5% exploration
+brought p99 from 1560 to 60 units, against 13.7 for share selection. The fast target
+still took about 52% of picks against a 43% capacity share, the remaining skew from
+argmax. The blend keeps argmax; share selection is the next step if that skew matters.
+Without exploration the ratio scores starve a target that has no sample, which is why
+the warm-up and exploration stay on.
+
 ### Telemetry
 
 The scores the blend ranks on live in the balancer, which lives in the gateway process, so the control plane cannot read them directly. Each gateway therefore **pushes** a sample every 15s to `POST /internal/adaptive-telemetry` on the control plane — the same internal token and the same `x-rolter-node-id` identity as the snapshot poll, so one node is one row here and in the cluster inventory (#543). Nothing is written on the request path: the sample is taken by a background task, and a pick costs two relaxed atomics for per-target attribution.

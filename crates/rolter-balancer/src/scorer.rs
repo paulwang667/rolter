@@ -448,6 +448,106 @@ fn rank_lower_better(value: impl Fn(usize) -> Option<f64>, candidates: &[usize],
     }
 }
 
+/// Ratio form of [`rank_lower_better`], for the adaptive blend.
+///
+/// The best known value scores `1.0` and every other known value scores
+/// `best / value`, so the size of a gap survives: 100 ms against 101 ms scores
+/// `0.99`, and a tenfold price scores `0.1`. Min-max scaling squeezed every
+/// two-target gap to `1.0` against `0.0`, which let a 1 ms difference outweigh a
+/// tenfold price and drowned out the load term. An unknown value scores a neutral
+/// `0.5`. With fewer than two known values there is nothing to compare, so every
+/// target scores `1.0`, as in [`rank_lower_better`].
+fn rank_ratio(value: impl Fn(usize) -> Option<f64>, candidates: &[usize], out: &mut [f32]) {
+    let known = |i: usize| value(i).filter(|v| *v > 0.0 && v.is_finite());
+    let (mut best, mut seen) = (f64::INFINITY, 0usize);
+    for &i in candidates {
+        if let Some(v) = known(i) {
+            best = best.min(v);
+            seen += 1;
+        }
+    }
+    if seen < 2 {
+        out.fill(1.0);
+        return;
+    }
+    for (o, &i) in out.iter_mut().zip(candidates) {
+        *o = match known(i) {
+            Some(v) => (best / v) as f32,
+            None => 0.5,
+        };
+    }
+}
+
+/// [`FastestScorer`] with ratio normalisation, used by the adaptive blend. It
+/// keeps the `fastest` name, so the blend's telemetry reads it unchanged.
+pub struct FastestRatioScorer {
+    source: std::sync::Arc<dyn LatencySource>,
+    /// route width handed to the source
+    n: usize,
+}
+
+impl FastestRatioScorer {
+    pub fn new(n: usize, source: std::sync::Arc<dyn LatencySource>) -> Self {
+        Self { source, n }
+    }
+}
+
+impl Scorer for FastestRatioScorer {
+    fn name(&self) -> &'static str {
+        "fastest"
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
+    }
+
+    fn score_into(
+        &self,
+        _ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
+        let latencies = self.source.latencies(self.n);
+        rank_ratio(|i| latencies.get(i).copied(), candidates, out);
+    }
+}
+
+/// [`CheapestScorer`] with ratio normalisation, used by the adaptive blend. It
+/// keeps the `cheapest` name, so the blend's telemetry reads it unchanged.
+pub struct CheapestRatioScorer {
+    /// per-target cost, index-aligned with the route targets (`<= 0` = unknown)
+    costs: Vec<f64>,
+}
+
+impl CheapestRatioScorer {
+    pub fn new(costs: &[f64]) -> Self {
+        Self {
+            costs: costs.to_vec(),
+        }
+    }
+}
+
+impl Scorer for CheapestRatioScorer {
+    fn name(&self) -> &'static str {
+        "cheapest"
+    }
+
+    fn reads_prompt(&self) -> bool {
+        false
+    }
+
+    fn score_into(
+        &self,
+        _ctx: &RouteContext,
+        candidates: &[usize],
+        _loads: &[u64],
+        out: &mut [f32],
+    ) {
+        rank_ratio(|i| self.costs.get(i).copied(), candidates, out);
+    }
+}
+
 /// A live, lock-cheap source of per-target latency the [`FastestScorer`] reads
 /// at pick time. Implemented by the gateway over its request-completion
 /// tracker; `latencies(n)` returns one entry per target (`<= 0` = no sample
@@ -1453,5 +1553,47 @@ mod tests {
         // with nothing eligible it scores every target, as pick does
         assert_eq!(pipeline.pick_eligible(&ctx, &loads, &|_| false), Some(0));
         assert_eq!(Pipeline::new(0).pick_eligible(&ctx, &[], &|_| true), None);
+    }
+}
+
+#[cfg(test)]
+mod ratio_tests {
+    use super::*;
+
+    fn scores(values: &[Option<f64>]) -> Vec<f32> {
+        let candidates: Vec<usize> = (0..values.len()).collect();
+        let mut out = vec![0.0; values.len()];
+        rank_ratio(|i| values[i], &candidates, &mut out);
+        out
+    }
+
+    #[test]
+    fn a_one_millisecond_gap_scores_close_to_one() {
+        let got = scores(&[Some(100.0), Some(101.0)]);
+        assert_eq!(got[0], 1.0);
+        assert!((got[1] - 100.0 / 101.0).abs() < 1e-6, "{got:?}");
+    }
+
+    #[test]
+    fn a_tenfold_gap_scores_a_tenth() {
+        let got = scores(&[Some(10.0), Some(100.0)]);
+        assert_eq!(got, vec![1.0, 0.1]);
+    }
+
+    #[test]
+    fn an_unknown_value_is_neutral_once_two_are_known() {
+        let got = scores(&[Some(10.0), None, Some(20.0)]);
+        assert_eq!(got, vec![1.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn with_fewer_than_two_known_values_every_target_is_flat() {
+        assert_eq!(scores(&[Some(10.0), None]), vec![1.0, 1.0]);
+        assert_eq!(scores(&[None, None]), vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn equal_values_are_flat() {
+        assert_eq!(scores(&[Some(5.0), Some(5.0)]), vec![1.0, 1.0]);
     }
 }

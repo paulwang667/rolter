@@ -35,7 +35,7 @@ use rand::RngExt;
 use rolter_core::AdaptiveRoutingConfig;
 
 use crate::scorer::{
-    CheapestScorer, FastestScorer, LatencySource, LeastLoadScorer, Pipeline, Scorer,
+    CheapestRatioScorer, FastestRatioScorer, LatencySource, LeastLoadScorer, Pipeline, Scorer,
 };
 use crate::{
     AdaptiveTelemetry, DecisionCounts, LoadBalancer, RouteContext, TargetTelemetry, Usable,
@@ -105,14 +105,16 @@ impl Adaptive {
         let mut costs = costs.to_vec();
         costs.resize(n, 0.0);
         let mut blend = Pipeline::new(n).named("adaptive");
+        // ratio scores, not min-max: the blend's weights only mean what they say
+        // if a gap keeps its size (see `rank_ratio`)
         if let (Some(source), true) = (latency.as_ref(), cfg.latency_weight > 0.0) {
             blend = blend.with(
-                Box::new(FastestScorer::new(n, source.clone())) as Box<dyn Scorer>,
+                Box::new(FastestRatioScorer::new(n, source.clone())) as Box<dyn Scorer>,
                 cfg.latency_weight,
             );
         }
         if cfg.cost_weight > 0.0 {
-            blend = blend.with(Box::new(CheapestScorer::new(&costs)), cfg.cost_weight);
+            blend = blend.with(Box::new(CheapestRatioScorer::new(&costs)), cfg.cost_weight);
         }
         if cfg.load_weight > 0.0 {
             blend = blend.with(Box::new(LeastLoadScorer::new(n)), cfg.load_weight);
@@ -807,5 +809,69 @@ mod tests {
         for _ in 0..30 {
             assert_ne!(cold.pick_eligible(&ctx, &[], &|i| i != 0), Some(0));
         }
+    }
+}
+
+#[cfg(test)]
+mod blend_normalisation_tests {
+    use super::*;
+
+    struct Fixed(Vec<f64>);
+
+    impl LatencySource for Fixed {
+        fn latencies(&self, n: usize) -> Vec<f64> {
+            let mut out = self.0.clone();
+            out.resize(n, 0.0);
+            out
+        }
+    }
+
+    /// An adaptive route that is engaged from the first pick: the kill switch is
+    /// on, every weight is set, and there is no exploration or warm-up to mix in.
+    fn engaged(costs: &[f64], latencies: Vec<f64>) -> Adaptive {
+        let cfg = AdaptiveRoutingConfig {
+            enabled: true,
+            latency_weight: 1.0,
+            cost_weight: 0.5,
+            load_weight: 0.25,
+            exploration_ratio: 0.0,
+            min_samples: 0,
+        };
+        let weights = vec![1; costs.len()];
+        Adaptive::new(&weights, costs, Some(Arc::new(Fixed(latencies))), &cfg)
+    }
+
+    fn counts(balancer: &Adaptive, loads: &[u64], picks: usize) -> Vec<usize> {
+        let mut out = vec![0; loads.len()];
+        for _ in 0..picks {
+            let i = balancer.pick(&RouteContext::default(), loads).unwrap();
+            out[i] += 1;
+        }
+        out
+    }
+
+    #[test]
+    fn a_tenfold_price_is_not_paid_for_one_millisecond() {
+        // target 0 is cheap and 1 ms slower; target 1 is ten times the price and
+        // 1 ms faster. Min-max scoring read the 1 ms as the whole latency range
+        // and sent every request to target 1.
+        let balancer = engaged(&[1.0, 10.0], vec![101.0, 100.0]);
+        assert_eq!(counts(&balancer, &[0, 0], 500), vec![500, 0]);
+    }
+
+    #[test]
+    fn a_small_latency_gap_does_not_override_a_busy_target() {
+        // both targets have the same price; target 0 is busy and 1 ms faster. The
+        // load term is what should decide between them, not the 1 ms.
+        let balancer = engaged(&[1.0, 1.0], vec![100.0, 101.0]);
+        assert_eq!(counts(&balancer, &[8, 0], 500), vec![0, 500]);
+    }
+
+    #[test]
+    fn a_large_latency_gap_still_outweighs_a_small_price_gap() {
+        // target 0 is ten times faster and ten times the price; the latency
+        // weight still makes it the blend's choice
+        let balancer = engaged(&[10.0, 1.0], vec![10.0, 100.0]);
+        assert_eq!(counts(&balancer, &[0, 0], 500), vec![500, 0]);
     }
 }
