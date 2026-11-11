@@ -105,6 +105,7 @@ A route defined through the API can carry the same weighted
 [variants](/concepts/providers-and-routes#variants) as a `[[routes.variants]]`
 entry in `rolter.toml`: named buckets with a traffic weight, their own ordered
 targets and optional param defaults. Each request samples one variant by weight
+(a caller that sends the same `x-session-id` header or `user` field keeps its variant)
 and falls back through the others in the order they are listed. While a route
 has variants, its own target list is not used.
 

@@ -23,6 +23,7 @@ pub mod adaptive;
 pub mod complexity;
 pub mod predictor;
 pub mod scorer;
+pub mod share;
 pub mod trie;
 use trie::Trie;
 
@@ -353,6 +354,9 @@ pub fn build_with_stats(
                     .with(Box::new(scorer::LeastLoadScorer::new(n)), 1.0),
             ),
         },
+        BalancingStrategy::FastestShare => {
+            Box::new(share::FastestShare::new(n, stats.latency.clone()))
+        }
         // a strategy from a newer release (#3347). The snapshot sanitizer
         // omits such a route before it gets here; should one arrive anyway, it
         // refuses rather than being balanced by a guess
@@ -1271,6 +1275,7 @@ mod tests {
             // source is wired here, so these are load-only stacks
             BalancingStrategy::PredictedLatency,
             BalancingStrategy::LmcacheAware,
+            BalancingStrategy::FastestShare,
         ];
         for strategy in never {
             assert!(

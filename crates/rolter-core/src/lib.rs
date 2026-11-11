@@ -32,6 +32,7 @@ pub mod probe;
 pub mod prompt_templates;
 pub mod redact;
 pub mod request_outcome;
+pub mod sampling;
 pub mod secret_env;
 pub mod semantic_guards;
 #[cfg(feature = "shutdown")]

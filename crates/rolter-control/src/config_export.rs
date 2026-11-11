@@ -869,6 +869,7 @@ fn strategy_name(strategy: BalancingStrategy) -> &'static str {
         BalancingStrategy::Adaptive => "adaptive",
         BalancingStrategy::LoraAware => "lora_aware",
         BalancingStrategy::PredictedLatency => "predicted_latency",
+        BalancingStrategy::FastestShare => "fastest_share",
         // a value a newer release stored (#3347); importing the file refuses
         // it rather than guessing
         BalancingStrategy::Unknown => "unknown",

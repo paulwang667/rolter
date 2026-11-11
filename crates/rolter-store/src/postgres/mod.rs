@@ -2641,6 +2641,7 @@ mod tests {
             BalancingStrategy::Adaptive => "adaptive",
             BalancingStrategy::LoraAware => "lora_aware",
             BalancingStrategy::PredictedLatency => "predicted_latency",
+            BalancingStrategy::FastestShare => "fastest_share",
             // never stored: it stands for a value a newer release wrote (#3347)
             BalancingStrategy::Unknown => unreachable!("Unknown has no column value"),
         }
@@ -2661,6 +2662,7 @@ mod tests {
         BalancingStrategy::Adaptive,
         BalancingStrategy::LoraAware,
         BalancingStrategy::PredictedLatency,
+        BalancingStrategy::FastestShare,
     ];
 
     // `lora_aware` (#896) and `predicted_latency` (#912) both shipped a check

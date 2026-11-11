@@ -288,7 +288,7 @@ Variants let you run **A/B tests**, **canary deployments**, and **per-key traffi
 
 <Steps>
   <Step title="Request arrives">
-    Rolter samples one variant proportionally by weight — this is the _primary_ variant.
+    Rolter samples one variant proportionally by weight — this is the _primary_ variant. A caller that sends an `x-session-id` header, or a `user` field in the body, keeps the same primary on every request.
   </Step>
   <Step title="Primary attempted">
     Rolter forwards the request through the primary variant's targets.

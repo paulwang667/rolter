@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
 use chrono::Utc;
+use rand::RngExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::Instrument;
@@ -3888,7 +3889,15 @@ async fn forward_variants(
     let route = &entry.route;
     let cd_enabled = snap.cooldown.enabled();
 
-    let primary = route.sample_variant(jitter(started)).unwrap_or(0);
+    // a JSON caller's `user` field is its identity when it sent no session
+    // header; a multipart upload has no parsed body to read it from
+    let user = match payload {
+        ForwardPayload::Json { parsed, .. } => parsed.get("user").and_then(Value::as_str),
+        ForwardPayload::Multipart { .. } => None,
+    };
+    let primary = route
+        .sample_variant(variant_draw(&entry.namespace, ctx.session_key, user))
+        .unwrap_or(0);
     // each variant's registry key, built once per request for the candidate
     // list and the loop below rather than once per candidate per attempt
     // (#3249)
@@ -5022,6 +5031,28 @@ async fn back_off(delay_ms: u64, can_retry: bool) {
 /// requests, or any server-side error.
 fn is_retryable_status(status: u16) -> bool {
     status == 408 || status == 429 || status >= 500
+}
+
+/// The draw that picks a request's primary variant.
+///
+/// A caller with a stable identity (the `x-session-id` header, else the body's
+/// `user` field) hashes it within the route, so it lands on the same variant on
+/// every request: an A/B test and a canary both need that, or one user sees both
+/// arms. A request with no identity takes a fresh uniform draw, as the realtime
+/// path does. The HTTP path used to draw from the time elapsed since the request
+/// began, which takes few distinct values (see [`jitter`]) and repeats for no
+/// caller.
+fn variant_draw(namespace: &str, session_key: Option<&str>, user: Option<&str>) -> f64 {
+    match [session_key, user]
+        .into_iter()
+        .flatten()
+        .find(|identity| !identity.is_empty())
+    {
+        Some(identity) => {
+            rolter_core::sampling::stable_unit(format!("{namespace}\u{1f}{identity}").as_bytes())
+        }
+        None => rand::rng().random::<f64>(),
+    }
 }
 
 /// Cheap, dependency-free jitter source in `[0, 1)` derived from the request
@@ -9081,5 +9112,68 @@ mod tests {
         // and the route still forwards: fail-open, not a 503
         assert_eq!(pick(), Some(0));
         assert_eq!(pick(), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod variant_draw_tests {
+    use super::variant_draw;
+    use rolter_core::sampling::stable_unit;
+
+    #[test]
+    fn a_session_header_pins_the_same_draw_on_every_request() {
+        let first = variant_draw("gpt-4o", Some("session-7"), None);
+        assert_eq!(first, variant_draw("gpt-4o", Some("session-7"), None));
+        assert_eq!(first, stable_unit(b"gpt-4o\x1fsession-7"));
+    }
+
+    #[test]
+    fn the_session_header_outranks_the_body_user() {
+        assert_eq!(
+            variant_draw("gpt-4o", Some("session-7"), Some("alice")),
+            variant_draw("gpt-4o", Some("session-7"), None),
+        );
+        assert_eq!(
+            variant_draw("gpt-4o", None, Some("alice")),
+            stable_unit(b"gpt-4o\x1falice"),
+        );
+    }
+
+    #[test]
+    fn an_empty_identity_is_no_identity() {
+        let draw = variant_draw("gpt-4o", Some(""), Some(""));
+        assert!((0.0..1.0).contains(&draw));
+    }
+
+    #[test]
+    fn the_same_caller_draws_independently_on_two_routes() {
+        assert_ne!(
+            variant_draw("gpt-4o", Some("session-7"), None),
+            variant_draw("claude", Some("session-7"), None),
+        );
+    }
+
+    #[test]
+    fn a_weighted_split_holds_across_stable_callers() {
+        // a 90/10 split over 20k callers lands within a point of 90% primary
+        let primary = (0..20_000)
+            .filter(|i| variant_draw("gpt-4o", Some(&format!("caller-{i}")), None) < 0.9)
+            .count();
+        let share = primary as f64 / 20_000.0;
+        assert!((share - 0.9).abs() < 0.01, "primary share {share}");
+    }
+
+    #[test]
+    fn a_caller_with_no_identity_draws_afresh_each_time() {
+        let mut distinct: Vec<u64> = (0..1_000)
+            .map(|_| variant_draw("gpt-4o", None, None).to_bits())
+            .collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(
+            distinct.len() > 990,
+            "only {} distinct draws",
+            distinct.len()
+        );
     }
 }

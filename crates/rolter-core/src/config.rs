@@ -1302,6 +1302,11 @@ pub enum BalancingStrategy {
     /// modelled to cost on each, from the queue it would join and its own
     /// prompt size, rather than by a per-target average
     PredictedLatency,
+    /// latency-aware, but spreads picks by share rather than sending every one
+    /// to the single fastest target: a target's share grows with the square of
+    /// its speed and falls with its in-flight load, with a uniform floor so a
+    /// slow target keeps producing samples. Opt-in: `fastest` keeps its argmax.
+    FastestShare,
     /// a strategy this build does not know, read from a newer control plane's
     /// snapshot (#3347). The route refuses: the snapshot sanitizer omits it,
     /// so a request for its model is answered as for any unknown model rather
@@ -4348,6 +4353,7 @@ mod known_values {
         Adaptive,
         LoraAware,
         PredictedLatency,
+        FastestShare,
     });
     known_values!(OverrideMode { Allow, Deny });
     known_values!(BudgetScope {

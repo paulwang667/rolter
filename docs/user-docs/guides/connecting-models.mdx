@@ -64,7 +64,7 @@ For many replicas of self-hosted engines (vLLM, SGLang, TGI):
 | ------------------------------------------ | ------------------------------------------------------------- |
 | identical replicas, nothing special        | `round_robin`                                                 |
 | a canary or an uneven fleet                | `weighted`                                                    |
-| latency matters most                       | `fastest`, `predicted_latency`                                |
+| latency matters most                       | `fastest`, `fastest_share`, `predicted_latency`               |
 | multi-turn chat or long shared prefixes    | `cache_aware` (keeps KV caches warm)                          |
 | spread load with little coordination       | `power_of_two`                                                |
 | let observed latency, cost and load decide | `adaptive` (turn it on under **Adaptive Routing → Settings**) |

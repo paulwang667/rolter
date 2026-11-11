@@ -25,6 +25,7 @@ export const STRATEGIES = [
   "adaptive",
   "lora_aware",
   "predicted_latency",
+  "fastest_share",
 ] as const;
 
 /**

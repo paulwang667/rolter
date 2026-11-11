@@ -422,6 +422,7 @@ Each `[[routes]]` block maps a public model name that clients request to one or 
 | `pipeline`            | Composable scorer pipeline: static weight, in-flight load and prefix-cache affinity |
 | `cheapest`            | Lowest catalog price for the target's upstream model; load breaks ties              |
 | `fastest`             | Lowest observed request latency; load breaks ties and carries cold routes           |
+| `fastest_share`       | Latency-share selection: a faster target takes most traffic, not all; load damps it |
 | `precise_cache_aware` | Exact resident-prefix score from vLLM KV-cache events; load fallback                |
 | `lmcache_aware`       | Cache availability and free-capacity score from LMCache controller occupancy        |
 | `adaptive`            | Weighted blend of latency, cost and load, governed by `[adaptive_routing]`          |
@@ -472,7 +473,7 @@ Controls whether clients may override the values set in `[routes.params]`.
 
 #### \[\[routes.variants\]\]
 
-Variants replace the top-level `targets`/`strategy` pool when you want A/B, canary, or traffic-split routing under a single model name. A request randomly samples one variant by weight (the primary) and falls back to the remaining variants in declared order if the primary fails. Within a variant, the route's `strategy` picks which target is tried first; the remaining targets follow in declared order.
+Variants replace the top-level `targets`/`strategy` pool when you want A/B, canary, or traffic-split routing under a single model name. A request samples one variant by weight (the primary). A caller that sends an `x-session-id` header, or a `user` field in the body, keeps the same primary on every request, so a user stays on one arm of an A/B test or canary; a request with neither is sampled afresh and falls back to the remaining variants in declared order if the primary fails. Within a variant, the route's `strategy` picks which target is tried first; the remaining targets follow in declared order.
 
 <ParamField path="name" type="string" required>
   A stable identifier for this variant. Appears in request logs under the `variant` column for attribution and A/B analysis.

@@ -40,7 +40,7 @@ export const STRATEGY_GROUPS = {
     "lmcache_aware",
     "lora_aware",
   ],
-  latencyCost: ["fastest", "predicted_latency", "cheapest", "adaptive"],
+  latencyCost: ["fastest", "fastest_share", "predicted_latency", "cheapest", "adaptive"],
   weighted: ["weighted", "pipeline"],
 } as const satisfies Record<string, readonly Strategy[]>;
 

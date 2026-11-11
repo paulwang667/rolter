@@ -6619,6 +6619,7 @@
       "pipeline": "Filter, score, then pick the best. For blending weight, load and cache signals.",
       "cheapest": "Lowest catalog price for the upstream model. For cost-sensitive routing across mixed-price providers.",
       "fastest": "Lowest observed request latency. For heterogeneous pools where speed matters most.",
+      "fastestShare": "Spreads picks by latency share, so the fastest target takes most traffic without taking all of it. For heterogeneous pools where a single fastest target would flood.",
       "preciseCacheAware": "Exact resident-prefix score from vLLM KV events. For vLLM fleets that publish KV events.",
       "lmcacheAware": "Cache availability and free capacity from the LMCache controller. For LMCache-backed fleets.",
       "adaptive": "Blend of latency, cost and load, tuned by the gateway. For pools mixed in both price and latency.",

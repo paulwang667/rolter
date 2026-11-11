@@ -231,7 +231,7 @@ pub(super) fn default_strategy() -> String {
     "round_robin".to_string()
 }
 
-pub(super) const STRATEGIES: [&str; 14] = [
+pub(super) const STRATEGIES: [&str; 15] = [
     "round_robin",
     "random",
     "power_of_two",
@@ -246,6 +246,7 @@ pub(super) const STRATEGIES: [&str; 14] = [
     "adaptive",
     "lora_aware",
     "predicted_latency",
+    "fastest_share",
 ];
 
 async fn create_route(

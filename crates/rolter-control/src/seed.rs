@@ -533,6 +533,7 @@ fn strategy_column(strategy: BalancingStrategy) -> &'static str {
         BalancingStrategy::Adaptive => "adaptive",
         BalancingStrategy::LoraAware => "lora_aware",
         BalancingStrategy::PredictedLatency => "predicted_latency",
+        BalancingStrategy::FastestShare => "fastest_share",
         // parsing a file refuses an unknown strategy (#3347), so this is never
         // reached; the column's check constraint would refuse it if it were
         BalancingStrategy::Unknown => "unknown",

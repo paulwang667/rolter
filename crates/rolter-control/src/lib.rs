@@ -1971,6 +1971,7 @@ async fn seed_default_models(pool: &sqlx::PgPool, config: &GatewayConfig) -> any
             rolter_core::BalancingStrategy::Adaptive => "adaptive",
             rolter_core::BalancingStrategy::LoraAware => "lora_aware",
             rolter_core::BalancingStrategy::PredictedLatency => "predicted_latency",
+            rolter_core::BalancingStrategy::FastestShare => "fastest_share",
             // parsing a file refuses an unknown strategy (#3347); the column's
             // check constraint would refuse it if it got here
             rolter_core::BalancingStrategy::Unknown => "unknown",
@@ -2287,6 +2288,7 @@ fn balancing_strategy_str(strategy: rolter_core::BalancingStrategy) -> &'static 
         Adaptive => "adaptive",
         LoraAware => "lora_aware",
         PredictedLatency => "predicted_latency",
+        FastestShare => "fastest_share",
         // parsing a file refuses an unknown strategy (#3347); the column's
         // check constraint would refuse it if it got here
         Unknown => "unknown",

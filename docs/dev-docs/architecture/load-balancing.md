@@ -38,6 +38,7 @@ pub trait LoadBalancer: Send + Sync {
 - **lmcache_aware** — polls each target's configured LMCache controller signal and prefers available caches with free capacity (`1 - occupancy`). Empty, saturated, failed, and stale controllers stay neutral and fall back to least load.
 - **adaptive** — a weighted blend of observed latency, catalog cost and in-flight load, governed by the deployment-wide `[adaptive_routing]` policy. See below.
 - **predicted_latency** — rank targets by what _this_ request is modelled to cost on each of them, from the queue it would join and its own prompt size, rather than by a per-target average. See below.
+- **fastest_share** — latency-share selection: a target's share grows with the square of its speed and falls with its in-flight load, with a 5% uniform floor. Opt-in; `fastest` keeps its argmax. See [Share-based latency selection](#share-based-latency-selection-fastest_share).
 - **lora_aware** — LoRA-adapter affinity for a fleet serving many adapters over shared base weights: prefer a target that already holds the requested adapter resident, with prefix affinity and in-flight load behind it. See below.
 
 ### Which strategies read a target's weight
@@ -240,22 +241,123 @@ that gains a target keeps its existing models and the new target reads as
 unpredicted until the next process start — the conservative direction, since a
 target with no evidence should not be ranked.
 
+## Share-based latency selection (`fastest_share`)
+
+`fastest` sends every pick to the target with the best latency score, and on a
+pool whose targets differ in speed that is a herd. The min-max scoring stretches
+any gap between two targets, however small, to the ends of its range, so the
+in-flight term (weight 0.25) cannot break the tie. And the latency average learns
+of a queue only after the requests in it finish, so the favoured target floods
+before its score moves. The herd is not limited to heterogeneous pools: on a
+homogeneous pool the noise between two averages is enough to start one.
+
+`fastest_share` draws a target instead. A usable target's share is proportional
+to `(1/latency)^2`, divided by `1 + in_flight`, mixed with a uniform floor of 5%
+spread over the usable targets so a slow target keeps producing samples. An
+unknown latency takes the mean of the known ones (or `1.0` when none is known),
+so an unsampled target is neither favoured nor punished. Ineligible targets take
+no share. A pool with no latency source (a provider group) splits by in-flight
+load alone. The strategy never reads the prompt. The selection is
+`share_pick` in [`share.rs`](../../../crates/rolter-balancer/src/share.rs), a pure
+function of one draw, so each rule is pinned by a test with a known draw.
+
+The rule was chosen by simulation before it was built. The model is a
+discrete-event queue: three targets, each a single FIFO server with exponential
+service; Poisson arrivals at utilisation ρ; the router sees in-flight counts and a
+latency EWMA folded in when a request completes, with the same smoothing factor as
+`LATENCY_EWMA_ALPHA` (0.3). Each cell is the p99 sojourn in mean-service-time
+units, averaged over three seeds:
+
+| pool                             | ρ   | `fastest` (argmax) | `fastest_share` | JSQ (reference) |
+| -------------------------------- | --- | ------------------ | --------------- | --------------- |
+| heterogeneous, μ = 1 / 0.8 / 0.5 | 0.6 | 1560               | 13.7            | 9.8             |
+| heterogeneous, μ = 1 / 0.8 / 0.5 | 0.8 | 7142               | 22.1            | 15.1            |
+| homogeneous, μ = 1 / 1 / 1       | 0.6 | 3247               | 10.0            | 6.4             |
+| homogeneous, μ = 1 / 1 / 1       | 0.8 | 7124               | 15.2            | 9.7             |
+
+Under `fastest` at ρ = 0.6 on the heterogeneous pool, the slowest target took
+about 5% of picks against a capacity share of about 22%. The simulation is
+synthetic: one server per target, no continuous batching, no retries and no
+long-tailed request durations. It is the case for the change, not a measurement
+of it.
+
+### Live measurement
+
+The same pool was then run through the real gateway. Three fake upstreams, each a
+FIFO single server with exponential service at 25 ms per unit of speed, sat behind
+a debug build of `rolter-gateway` in front of a route with the three targets. The
+client sent open-loop Poisson arrivals at the offered load for 60 seconds and
+discarded the first 10. Every run started fresh upstreams and a fresh gateway.
+Latency is from scheduled arrival to response; the percentiles cover successful
+responses only, and the failures are counted apart. Two repetitions:
+
+| ρ   | strategy        | run | ok        | failures (429) | p50 (s) | p99 (s) | share fast / mid / slow |
+| --- | --------------- | --- | --------- | -------------- | ------- | ------- | ----------------------- |
+| 0.6 | `fastest`       | 1   | all       | 0              | 2.04    | 11.17   | 0.60 / 0.25 / 0.15      |
+| 0.6 | `fastest`       | 2   | 2698/2713 | 15             | 3.09    | 7.14    | 0.56 / 0.33 / 0.11      |
+| 0.6 | `fastest_share` | 1   | all       | 0              | 0.061   | 0.318   | 0.44 / 0.36 / 0.21      |
+| 0.6 | `fastest_share` | 2   | all       | 0              | 0.062   | 0.365   | 0.46 / 0.35 / 0.19      |
+| 0.8 | `fastest`       | 1   | 2548/3650 | 1102           | 3.23†   | 8.85†   | 0.67 / 0.33 / 0.00      |
+| 0.8 | `fastest`       | 2   | 2763/3650 | 887            | 4.50    | 8.55    | 0.65 / 0.27 / 0.08      |
+| 0.8 | `fastest_share` | 1   | all       | 0              | 0.114   | 0.582   | 0.44 / 0.35 / 0.21      |
+| 0.8 | `fastest_share` | 2   | all       | 0              | 0.130   | 0.689   | 0.44 / 0.35 / 0.21      |
+
+† Run 1 of `fastest` at ρ = 0.8 was measured before the harness recorded status
+codes; its failures were folded into the percentiles and not counted apart, so
+its percentile is not comparable and is shown for completeness only. Run 2 is the
+clean measurement.
+
+Three things follow from the live runs. The p99 of `fastest_share` is 12 to 35
+times lower than `fastest` on these pools, a smaller gap than the simulation
+predicted but the same order of effect, and the gap is wider at ρ = 0.6 than the
+repetition spread. The split under `fastest_share` lands near the capacity split
+(0.43 / 0.35 / 0.22), while `fastest` starves the slow target: at ρ = 0.8 it
+took 0 to 8% of picks. And under `fastest` at ρ = 0.8 about a quarter of the
+requests were turned away by the gateway's own admission queue
+(`queue_full`, HTTP 429): the herd filled one target's queue faster than the
+default queue drains it. `fastest_share` rejected none in either run.
+
+Limits. Two repetitions give a rough spread, not a confidence interval. The
+upstreams are fake and single-server, and the client is Python, so the absolute
+numbers are not vLLM numbers. `just load-sim` was not used: it runs the built-in
+simulator on two identical engines, which does not exercise a heterogeneous pool.
+
+## Variant primary draw
+
+The primary variant is drawn by weight once per request. A request that names
+its caller hashes the caller's identity within the route, so the caller keeps one
+variant: the `x-session-id` header, else the body's `user` field. The draw is
+`variant_draw` in [`handlers.rs`](../../../crates/rolter-gateway/src/handlers.rs),
+over `stable_unit` in [`sampling.rs`](../../../crates/rolter-core/src/sampling.rs):
+FNV-1a with a splitmix64 finaliser, pinned by a test, because changing it moves
+every sticky caller at once. A request with no identity takes a fresh uniform
+draw, as the realtime path already does.
+
+The HTTP path used to draw from the nanoseconds elapsed since the request began.
+On Apple silicon the clock ticks about every 41.7 ns, so the draw took 40 distinct
+values, and a 99:1 canary received none of the traffic it was configured for
+(measured on an arm64 macOS build). Linux clocks are finer, so the grid did not
+show there, but the draw was still not a random source and not sticky for any
+caller. A weight change reassigns only the callers whose draw crosses a moved
+boundary.
+
 ## Choosing a strategy
 
-| Use case                                               | Strategy                 |
-| ------------------------------------------------------ | ------------------------ |
-| Homogeneous pool, stateless                            | `round_robin` / `random` |
-| Variable request durations                             | `power_of_two`           |
-| Multi-turn chat, sticky session                        | `consistent_hash`        |
-| Shared system prompts / few-shot / RAG                 | `cache_aware`            |
-| Blend cache + load + weight signals                    | `pipeline`               |
-| vLLM fleet with KV event publishing                    | `precise_cache_aware`    |
-| LMCache fleet with occupancy controller                | `lmcache_aware`          |
-| Mixed-price providers, minimize spend                  | `cheapest`               |
-| Heterogeneous pool, minimize latency                   | `fastest`                |
-| Mixed price _and_ latency, let the gateway tune        | `adaptive`               |
-| Many LoRA adapters over shared base weights            | `lora_aware`             |
-| Heterogeneous pool, variable prompt sizes, deep queues | `predicted_latency`      |
+| Use case                                                | Strategy                 |
+| ------------------------------------------------------- | ------------------------ |
+| Homogeneous pool, stateless                             | `round_robin` / `random` |
+| Variable request durations                              | `power_of_two`           |
+| Multi-turn chat, sticky session                         | `consistent_hash`        |
+| Shared system prompts / few-shot / RAG                  | `cache_aware`            |
+| Blend cache + load + weight signals                     | `pipeline`               |
+| vLLM fleet with KV event publishing                     | `precise_cache_aware`    |
+| LMCache fleet with occupancy controller                 | `lmcache_aware`          |
+| Mixed-price providers, minimize spend                   | `cheapest`               |
+| Heterogeneous pool, minimize latency                    | `fastest`                |
+| Heterogeneous pool, latency without one target flooding | `fastest_share`          |
+| Mixed price _and_ latency, let the gateway tune         | `adaptive`               |
+| Many LoRA adapters over shared base weights             | `lora_aware`             |
+| Heterogeneous pool, variable prompt sizes, deep queues  | `predicted_latency`      |
 
 Both external strategies perform network I/O only in background tasks. The request hot path reads bounded in-process state and atomics.
 

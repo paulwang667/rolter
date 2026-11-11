@@ -19,6 +19,7 @@ Every route in Rolter picks exactly one load-balancing strategy. The strategy ru
 | `pipeline`            | Composable filter → scored → argmax selection                                     | Blending weight, load, and cache signals together              |
 | `cheapest`            | Lowest catalog price for the target's upstream model; load breaks ties            | Cost-sensitive routing across mixed-price providers            |
 | `fastest`             | Lowest observed request latency (EWMA); load breaks ties and carries cold routes  | Heterogeneous pools where speed matters most                   |
+| `fastest_share`       | Latency-share selection: picks spread by speed and in-flight load, not argmax     | Heterogeneous pools where one fastest target would flood       |
 | `precise_cache_aware` | Exact resident-prefix score from vLLM KV events; load fallback                    | vLLM fleets with KV-event publishing                           |
 | `lmcache_aware`       | Cache availability and free-capacity score from controller occupancy              | LMCache-backed fleets                                          |
 | `adaptive`            | Weighted blend of latency, cost and load, gated by a global kill switch           | Mixed price _and_ latency pools, tuned by the gateway          |
@@ -183,6 +184,15 @@ Content-Type: application/json
 When the header is absent, these strategies fall back to hashing the prompt text.
 
 ---
+
+<Accordion title="fastest_share — spread picks by latency share">
+  `fastest` sends every pick to the target with the best latency score. Two things make that a herd: the scores are stretched to the ends of their range, so a small latency gap decides the pick outright, and the latency average learns of a queue only after the requests in it finish, so the favoured target floods before its score moves.
+
+`fastest_share` draws a target instead. A target's share grows with the square of its speed and falls with its in-flight count, and every usable target keeps a 5% floor so a slow one still gets samples. A target that is clearly faster takes most of the traffic, but not all of it.
+
+It is opt-in: `fastest` keeps its argmax. Pick it on a pool whose targets differ in speed, when you see one target absorbing the route after a latency change.
+
+</Accordion>
 
 <Accordion title="predicted_latency — model this request's cost, don't average past ones">
   `fastest` ranks on a per-target latency average. That is the right signal when every request is the same size, and the wrong one otherwise: a target whose average is high because it happened to serve the long prompts looks slow even when it is the emptiest box in the fleet, and a target with a deep queue looks fast right up until the queue is what you join.

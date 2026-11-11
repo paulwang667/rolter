@@ -275,7 +275,7 @@ See [Custom CA bundles](custom-ca-bundles.md) for rotation behavior and Docker/K
 ### `[[routes]]`
 
 - `model` (string) — public model name clients request
-- `strategy` (`round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted` | `pipeline` | `cheapest` | `fastest` | `precise_cache_aware` | `lmcache_aware` | `adaptive` | `lora_aware` | `predicted_latency`, default `round_robin`)
+- `strategy` (`round_robin` | `random` | `power_of_two` | `consistent_hash` | `cache_aware` | `weighted` | `pipeline` | `cheapest` | `fastest` | `fastest_share` | `precise_cache_aware` | `lmcache_aware` | `adaptive` | `lora_aware` | `predicted_latency`, default `round_robin`)
 - `[[routes.targets]]`
   - `provider` (string) — a provider `name`
   - `model` (string, optional) — upstream model id; defaults to the requested model
@@ -286,7 +286,7 @@ See [Custom CA bundles](custom-ca-bundles.md) for rotation behavior and Docker/K
   - `allow` (string[], default `[]`) — params callers may override when `mode = "deny"`
   - `deny` (string[], default `[]`) — params callers may not override when `mode = "allow"`
   - when an override is denied and the caller sends the param anyway, the admin default silently wins
-- `[[routes.variants]]` (optional) — weighted variants for A/B, canary, and key-split traffic. When present, the route ignores the top-level `targets` pool: a request samples one variant by weight (the primary) and, on failure, falls over to the remaining variants in declared order. Within a variant the route's `strategy` picks which target leads; the remaining targets follow in declared order as the deterministic fallback tail.
+- `[[routes.variants]]` (optional) — weighted variants for A/B, canary, and key-split traffic. When present, the route ignores the top-level `targets` pool: a request samples one variant by weight (the primary; a caller with an `x-session-id` header or a `user` field keeps its primary) and, on failure, falls over to the remaining variants in declared order. Within a variant the route's `strategy` picks which target leads; the remaining targets follow in declared order as the deterministic fallback tail.
   - `name` (string) — variant identifier, attributed in request logs (the `variant` column)
   - `weight` (u32, default `1`) — relative traffic share for the primary draw
   - `[[routes.variants.targets]]` — same shape as `[[routes.targets]]`
